@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Local Audio Playlist + Waveform/Spectrum</title>
+  <title>Local Audio Playlist (iPhone Safari background OK)</title>
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color-scheme: dark; }
-    body { margin: 0; background:#0b1220; color:#e6eefc; }
+    body { margin:0; background:#0b1220; color:#e6eefc; }
     .wrap { max-width: 920px; margin: 32px auto; padding: 16px; }
     .card{
       background: rgba(255,255,255,0.06);
@@ -15,7 +15,7 @@
       padding: 16px;
       backdrop-filter: blur(10px);
     }
-    h1{ margin: 0 0 10px; font-size: 18px; }
+    h1{ margin:0 0 10px; font-size:18px; }
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
     .row + .row{ margin-top: 12px; }
     input[type="file"]{ width:100%; }
@@ -46,25 +46,8 @@
     .grid{ display:grid; grid-template-columns: 1fr 220px; gap: 12px; width: 100%; }
     @media (max-width: 720px){ .grid{ grid-template-columns: 1fr; } }
 
-    .vizGrid{ display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 720px){ .vizGrid{ grid-template-columns: 1fr; } }
-
-    canvas{
-      width:100%;
-      height:160px;
-      background: rgba(0,0,0,0.25);
-      border: 1px solid rgba(255,255,255,0.10);
-      border-radius: 12px;
-      display:block;
-    }
-
-    .listWrap{
-      display:grid;
-      grid-template-columns: 1fr;
-      gap: 10px;
-    }
     .playlist{
-      max-height: 260px;
+      max-height: 320px;
       overflow:auto;
       border: 1px solid rgba(255,255,255,0.12);
       border-radius: 12px;
@@ -83,19 +66,18 @@
     .track:hover{ background: rgba(255,255,255,0.06); }
     .track.active{ background: rgba(255,255,255,0.10); }
     .track .name{ flex:1; }
-    .track .idx{ opacity:.7; width: 34px; text-align:right; font-variant-numeric: tabular-nums; }
-    .track .dur{ opacity:.7; width: 56px; text-align:right; font-variant-numeric: tabular-nums; }
-
+    .track .idx{ opacity:.7; width: 34px; text-align:right; }
+    .track .dur{ opacity:.7; width: 56px; text-align:right; }
     .muted{ opacity:.7; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
-    <h1>Local Audio Player — Playlist + Waveform + Spectrum (WebAudio)</h1>
+    <h1>Local Audio Player — Playlist (Safari iPhone: ẩn vẫn phát)</h1>
 
     <div class="row">
-      <input id="file" type="file" multiple />
+      <input id="file" type="file" accept=".mp3,.m4a,.wav,.aac,.ogg,.flac,audio/*" multiple />
     </div>
 
     <div class="row">
@@ -114,11 +96,6 @@
       <label class="pill" title="Tự chạy sang bài tiếp theo khi hết bài">
         <input id="autoNext" type="checkbox" checked />
         <span>Auto Next</span>
-      </label>
-
-      <label class="pill" title="Bật/Tắt visualize">
-        <input id="vizOn" type="checkbox" checked />
-        <span>Visualize</span>
       </label>
     </div>
 
@@ -148,18 +125,7 @@
       </div>
     </div>
 
-    <div class="row vizGrid">
-      <div>
-        <div class="label">Waveform</div>
-        <canvas id="wave" width="900" height="240"></canvas>
-      </div>
-      <div>
-        <div class="label">Spectrum</div>
-        <canvas id="spec" width="900" height="240"></canvas>
-      </div>
-    </div>
-
-    <div class="row listWrap">
+    <div class="row" style="flex-direction:column; align-items:stretch;">
       <div class="label">Playlist</div>
       <div id="playlist" class="playlist">
         <div class="track muted" style="cursor:default;">
@@ -168,15 +134,16 @@
       </div>
     </div>
 
-    <audio id="audio" crossorigin="anonymous"></audio>
+    <!-- playsinline giúp iPhone đỡ full-screen; audio element thuần giúp background playback ổn hơn -->
+    <audio id="audio" playsinline></audio>
+
     <div class="small muted" style="margin-top:10px;">
-      Tip: Click track để phát. Chrome/Edge yêu cầu tương tác người dùng trước khi bật AudioContext — em đã xử lý tự resume khi bấm Play.
+      Tip: Space play/pause • ←/→ prev/next (khi dùng bàn phím). iPhone vẫn nên bấm Play lần đầu để iOS cho phép phát.
     </div>
   </div>
 </div>
 
 <script>
-  // ====== DOM ======
   const fileInput = document.getElementById('file');
   const audio = document.getElementById('audio');
 
@@ -188,7 +155,6 @@
 
   const loopOne = document.getElementById('loopOne');
   const autoNext = document.getElementById('autoNext');
-  const vizOn = document.getElementById('vizOn');
 
   const seek = document.getElementById('seek');
   const vol = document.getElementById('vol');
@@ -203,12 +169,6 @@
 
   const playlistEl = document.getElementById('playlist');
 
-  const waveCanvas = document.getElementById('wave');
-  const specCanvas = document.getElementById('spec');
-  const waveCtx2d = waveCanvas.getContext('2d');
-  const specCtx2d = specCanvas.getContext('2d');
-
-  // ====== Helpers ======
   function fmtTime(sec) {
     if (!Number.isFinite(sec) || sec < 0) sec = 0;
     sec = Math.floor(sec);
@@ -231,8 +191,7 @@
 
   function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
 
-  // ====== Playlist model ======
-  /** @type {{file: File, url: string, name: string, size: number, type: string, duration?: number}[]} */
+  // Playlist
   let tracks = [];
   let currentIndex = -1;
   let objectUrls = [];
@@ -266,7 +225,9 @@
         <div class="name">${t.name}</div>
         <div class="dur mono">${durText}</div>
       `;
-      row.addEventListener('click', () => loadTrack(i, true));
+      row.addEventListener('click', async () => {
+        await loadTrack(i, true);
+      });
       playlistEl.appendChild(row);
     });
   }
@@ -291,9 +252,7 @@
     setState('ready');
     renderPlaylist();
 
-    if (autoplay) {
-      await playSafe();
-    }
+    if (autoplay) await playSafe();
   }
 
   function nextTrack(autoplay=true){
@@ -308,136 +267,16 @@
     loadTrack(p, autoplay);
   }
 
-  // ====== WebAudio Visualizer ======
-  let audioCtx = null;
-  let sourceNode = null;
-  let analyser = null;
-  let rafId = 0;
-
-  function initAudioGraphIfNeeded(){
-    if (audioCtx) return;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    sourceNode = audioCtx.createMediaElementSource(audio);
-
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;                 // waveform resolution
-    analyser.smoothingTimeConstant = 0.85;   // spectrum smoothing
-
-    // Connect: audio -> analyser -> destination
-    sourceNode.connect(analyser);
-    analyser.connect(audioCtx.destination);
-
-    startVizLoop();
-  }
-
-  function resizeCanvasToCSS(canvas){
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width * dpr));
-    const h = Math.max(1, Math.floor(rect.height * dpr));
-    if (canvas.width !== w || canvas.height !== h){
-      canvas.width = w; canvas.height = h;
-    }
-  }
-
-  function clearCanvas(ctx, canvas){
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-
-  function drawWaveform(){
-    resizeCanvasToCSS(waveCanvas);
-    const w = waveCanvas.width, h = waveCanvas.height;
-
-    clearCanvas(waveCtx2d, waveCanvas);
-    if (!analyser || !vizOn.checked) return;
-
-    const bufferLen = analyser.fftSize;
-    const data = new Uint8Array(bufferLen);
-    analyser.getByteTimeDomainData(data);
-
-    // background grid-ish
-    waveCtx2d.globalAlpha = 0.9;
-    waveCtx2d.lineWidth = Math.max(1, Math.floor((window.devicePixelRatio||1)));
-
-    // center line
-    waveCtx2d.beginPath();
-    waveCtx2d.moveTo(0, h/2);
-    waveCtx2d.lineTo(w, h/2);
-    waveCtx2d.strokeStyle = 'rgba(255,255,255,0.12)';
-    waveCtx2d.stroke();
-
-    // waveform
-    waveCtx2d.beginPath();
-    const slice = w / bufferLen;
-    for (let i=0; i<bufferLen; i++){
-      const v = data[i] / 128.0; // 0..2
-      const y = (v * h/2);
-      const x = i * slice;
-      if (i === 0) waveCtx2d.moveTo(x, y);
-      else waveCtx2d.lineTo(x, y);
-    }
-    waveCtx2d.strokeStyle = 'rgba(255,255,255,0.85)';
-    waveCtx2d.stroke();
-  }
-
-  function drawSpectrum(){
-    resizeCanvasToCSS(specCanvas);
-    const w = specCanvas.width, h = specCanvas.height;
-
-    clearCanvas(specCtx2d, specCanvas);
-    if (!analyser || !vizOn.checked) return;
-
-    const bufferLen = analyser.frequencyBinCount; // fftSize/2
-    const data = new Uint8Array(bufferLen);
-    analyser.getByteFrequencyData(data);
-
-    // draw bars
-    const barCount = 96; // reduce to look nicer
-    const step = Math.floor(bufferLen / barCount);
-    const barW = w / barCount;
-
-    for (let i=0; i<barCount; i++){
-      const v = data[i * step] / 255; // 0..1
-      const barH = v * h;
-      const x = i * barW;
-      const y = h - barH;
-
-      specCtx2d.fillStyle = 'rgba(255,255,255,0.85)';
-      specCtx2d.fillRect(x + barW*0.12, y, barW*0.76, barH);
-    }
-
-    // base line
-    specCtx2d.fillStyle = 'rgba(255,255,255,0.12)';
-    specCtx2d.fillRect(0, h-1, w, 1);
-  }
-
-  function startVizLoop(){
-    cancelAnimationFrame(rafId);
-    const loop = () => {
-      drawWaveform();
-      drawSpectrum();
-      rafId = requestAnimationFrame(loop);
-    };
-    rafId = requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('resize', () => {
-    // just force resize on next frame
-  });
-
-  // ====== Playback controls ======
   async function playSafe(){
     try{
-      initAudioGraphIfNeeded();
-      // resume AudioContext must be triggered by user gesture (Play click or track click)
-      if (audioCtx && audioCtx.state !== 'running') await audioCtx.resume();
-      await audio.play();
+      await audio.play(); // quan trọng: dùng audio element thuần để iOS background playback ổn hơn
     }catch(e){
       console.warn(e);
-      alert('Không play được. Thử chọn lại file hoặc kiểm tra định dạng audio.');
+      alert('Không play được. Trên iPhone cần bấm Play/Click track (user gesture) để cho phép phát.');
     }
   }
 
+  // Controls
   btnPlay.addEventListener('click', () => playSafe());
   btnPause.addEventListener('click', () => audio.pause());
   btnStop.addEventListener('click', () => {
@@ -450,19 +289,13 @@
   btnPrev.addEventListener('click', () => prevTrack(true));
 
   loopOne.addEventListener('change', () => { audio.loop = loopOne.checked; });
-  vizOn.addEventListener('change', () => {
-    // if off -> clear canvases
-    if (!vizOn.checked){
-      clearCanvas(waveCtx2d, waveCanvas);
-      clearCanvas(specCtx2d, specCanvas);
-    }
-  });
 
   vol.addEventListener('input', () => {
     audio.volume = Number(vol.value);
     volVal.textContent = Number(vol.value).toFixed(2);
   });
 
+  // Seek
   seek.addEventListener('pointerdown', () => { isSeeking = true; });
   seek.addEventListener('pointerup', () => { isSeeking = false; });
   seek.addEventListener('input', () => {
@@ -471,9 +304,9 @@
     audio.currentTime = ratio * audio.duration;
   });
 
+  // Audio events
   audio.addEventListener('loadedmetadata', () => {
     tDur.textContent = fmtTime(audio.duration);
-    // store duration into current track + rerender list
     if (tracks[currentIndex]) {
       tracks[currentIndex].duration = audio.duration;
       renderPlaylist();
@@ -494,27 +327,25 @@
 
   audio.addEventListener('ended', () => {
     setState('ended');
-    if (loopOne.checked) return; // loop handled by audio.loop anyway
+    if (audio.loop) return;
     if (autoNext.checked) nextTrack(true);
   });
 
-  // ====== Multi-file input ======
+  // Multi-file input
   fileInput.addEventListener('change', async () => {
     const files = Array.from(fileInput.files || []);
     if (!files.length) return;
 
-    // cleanup previous
     cleanupUrls();
     tracks = [];
     currentIndex = -1;
     setEnabled(false);
 
-    // build playlist
+    // build list
     for (const f of files){
       const url = URL.createObjectURL(f);
       objectUrls.push(url);
       tracks.push({
-        file: f,
         url,
         name: f.name,
         size: f.size,
@@ -522,23 +353,21 @@
       });
     }
 
-    // optional: sort by name
+    // sort by name (tuỳ anh, muốn giữ thứ tự chọn thì bỏ dòng này)
     tracks.sort((a,b) => a.name.localeCompare(b.name));
 
     renderPlaylist();
-    await loadTrack(0, false); // load first track, not autoplay
+    await loadTrack(0, false);
   });
 
-  // ====== optional hotkey Space ======
-  // Space: toggle play/pause (skip when typing in input)
+  // Hotkeys (desktop)
   window.addEventListener('keydown', async (e) => {
     const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea') return;
 
     if (e.code === 'Space') {
       e.preventDefault();
-      if (audio.paused) await playSafe();
-      else audio.pause();
+      if (audio.paused) await playSafe(); else audio.pause();
     } else if (e.code === 'ArrowRight') {
       nextTrack(true);
     } else if (e.code === 'ArrowLeft') {
@@ -546,10 +375,11 @@
     }
   });
 
-  // initial
+  // init
   setEnabled(false);
   audio.volume = 1;
   volVal.textContent = '1.00';
+  setState('idle');
 </script>
 </body>
 </html>
