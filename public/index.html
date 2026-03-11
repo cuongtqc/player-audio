@@ -19,6 +19,14 @@
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
     .row + .row{ margin-top: 12px; }
     input[type="file"]{ width:100%; }
+    input[type="text"], select{
+      width:100%;
+      padding: 8px 10px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color:#e6eefc;
+      border-radius: 10px;
+    }
     button{
       padding: 10px 12px;
       border: 1px solid rgba(255,255,255,0.18);
@@ -139,6 +147,66 @@
 
     <div class="small muted" style="margin-top:10px;">
       Tip: Space play/pause • ←/→ prev/next (khi dùng bàn phím). iPhone vẫn nên bấm Play lần đầu để iOS cho phép phát.
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <h1>YouTube Stream/Download (qua /api/media)</h1>
+    <form id="ytForm" class="row" style="flex-direction:column; align-items:stretch;">
+      <label class="label" for="ytUrl">YouTube URL</label>
+      <input id="ytUrl" type="text" placeholder="https://www.youtube.com/watch?v=..." required />
+
+      <div class="row">
+        <div style="flex:1; min-width: 180px;">
+          <div class="label">Mode</div>
+          <select id="ytMode">
+            <option value="stream">stream</option>
+            <option value="download">download</option>
+          </select>
+        </div>
+        <div style="flex:1; min-width: 180px;">
+          <div class="label">Type</div>
+          <select id="ytType">
+            <option value="video">video</option>
+            <option value="audio">audio</option>
+          </select>
+        </div>
+        <div style="flex:1; min-width: 180px;">
+          <div class="label">Quality</div>
+          <input id="ytQuality" type="text" placeholder="highest | lowest | itag" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div style="flex:1; min-width: 180px;">
+          <div class="label">Download Target</div>
+          <select id="ytTarget">
+            <option value="response">response</option>
+            <option value="disk">disk</option>
+          </select>
+        </div>
+        <div style="flex:1; min-width: 180px;">
+          <div class="label">Filename (optional)</div>
+          <input id="ytFilename" type="text" placeholder="my-video.mp4" />
+        </div>
+        <label class="pill" style="align-self:flex-end;">
+          <input id="ytFfmpeg" type="checkbox" />
+          <span>Enable FFmpeg</span>
+        </label>
+      </div>
+
+      <div class="row">
+        <button type="submit">Go</button>
+        <span id="ytStatus" class="pill mono">idle</span>
+      </div>
+    </form>
+
+    <div class="row" style="flex-direction:column; align-items:stretch; margin-top:10px;">
+      <video id="ytVideo" controls playsinline style="width:100%; max-height: 360px; display:none;"></video>
+      <audio id="ytAudio" controls style="width:100%; display:none;"></audio>
+      <div id="ytResult" class="small muted"></div>
     </div>
   </div>
 </div>
@@ -380,6 +448,73 @@
   audio.volume = 1;
   volVal.textContent = '1.00';
   setState('idle');
+
+  // YouTube helper
+  const ytForm = document.getElementById('ytForm');
+  const ytUrl = document.getElementById('ytUrl');
+  const ytMode = document.getElementById('ytMode');
+  const ytType = document.getElementById('ytType');
+  const ytQuality = document.getElementById('ytQuality');
+  const ytTarget = document.getElementById('ytTarget');
+  const ytFilename = document.getElementById('ytFilename');
+  const ytFfmpeg = document.getElementById('ytFfmpeg');
+  const ytStatus = document.getElementById('ytStatus');
+  const ytVideo = document.getElementById('ytVideo');
+  const ytAudio = document.getElementById('ytAudio');
+  const ytResult = document.getElementById('ytResult');
+
+  function setYtStatus(text){ ytStatus.textContent = text; }
+
+  function buildYtApiUrl(){
+    const params = new URLSearchParams();
+    params.set('url', ytUrl.value.trim());
+    params.set('mode', ytMode.value);
+    params.set('type', ytType.value);
+    if (ytQuality.value.trim()) params.set('quality', ytQuality.value.trim());
+    if (ytMode.value === 'download') params.set('downloadTarget', ytTarget.value);
+    if (ytFilename.value.trim()) params.set('filename', ytFilename.value.trim());
+    if (ytFfmpeg.checked) params.set('enableFfmpeg', 'true');
+    return `/api/media?${params.toString()}`;
+  }
+
+  ytForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const apiUrl = buildYtApiUrl();
+    ytResult.textContent = '';
+    setYtStatus('loading');
+
+    const isAudio = ytType.value === 'audio';
+    ytVideo.style.display = isAudio ? 'none' : 'block';
+    ytAudio.style.display = isAudio ? 'block' : 'none';
+
+    if (ytMode.value === 'download' && ytTarget.value === 'response') {
+      window.location.href = apiUrl;
+      setYtStatus('download');
+      return;
+    }
+
+    if (ytMode.value === 'download' && ytTarget.value === 'disk') {
+      try{
+        const res = await fetch(apiUrl);
+        const data = await res.json();
+        ytResult.textContent = JSON.stringify(data);
+        setYtStatus(res.ok ? 'done' : 'error');
+      }catch(err){
+        ytResult.textContent = String(err);
+        setYtStatus('error');
+      }
+      return;
+    }
+
+    if (isAudio) {
+      ytAudio.src = apiUrl;
+      await ytAudio.play().catch(() => {});
+    } else {
+      ytVideo.src = apiUrl;
+      await ytVideo.play().catch(() => {});
+    }
+    setYtStatus('streaming');
+  });
 </script>
 </body>
 </html>
