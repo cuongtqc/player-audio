@@ -191,7 +191,66 @@ function makeContentDisposition(filename, isDownload) {
   return `${dispositionType}; filename="${asciiFallback}"; filename*=UTF-8''${utf8Name}`;
 }
 
-function buildStreamArgs({ url, type, quality, mp3, start, end }) {
+function getAudioMime(metadata, mp3) {
+  if (mp3) return 'audio/mpeg';
+
+  const audioFormats = Array.isArray(metadata.formats)
+    ? metadata.formats.filter((fmt) => fmt && fmt.vcodec === 'none')
+    : [];
+
+  const bestAudio = audioFormats.sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
+  const ext = String((bestAudio && bestAudio.ext) || metadata.ext || '').toLowerCase();
+
+  if (ext === 'm4a' || ext === 'mp4') return 'audio/mp4';
+  if (ext === 'webm') return 'audio/webm';
+  if (ext === 'ogg' || ext === 'opus') return 'audio/ogg';
+  if (ext === 'wav') return 'audio/wav';
+  if (ext === 'flac') return 'audio/flac';
+
+  return 'application/octet-stream';
+}
+
+function selectBestAudioFormat(metadata) {
+  const audioFormats = Array.isArray(metadata.formats)
+    ? metadata.formats.filter((fmt) => fmt && fmt.vcodec === 'none')
+    : [];
+
+  if (!audioFormats.length) return null;
+
+  return audioFormats.sort((a, b) => {
+    const aScore = (a.abr || 0) * 1000000 + (a.filesize || a.filesize_approx || 0);
+    const bScore = (b.abr || 0) * 1000000 + (b.filesize || b.filesize_approx || 0);
+    return bScore - aScore;
+  })[0];
+}
+
+function isSafePartialAudio(metadata, mp3) {
+  if (mp3) return false;
+
+  const bestAudio = selectBestAudioFormat(metadata);
+  if (!bestAudio) return false;
+  if (!bestAudio.url) return false;
+
+  const size = Number(bestAudio.filesize || bestAudio.filesize_approx || 0);
+  if (!Number.isFinite(size) || size <= 0) return false;
+
+  const ext = String(bestAudio.ext || '').toLowerCase();
+  return ['m4a', 'mp4', 'webm', 'ogg', 'opus'].includes(ext);
+}
+
+function buildSafeAudioArgs({ url, formatId, start, end, allowRange }) {
+  const args = ['--no-warnings', '--no-playlist', '-f', String(formatId)];
+
+  if (allowRange && Number.isFinite(start) && Number.isFinite(end)) {
+    args.push('--downloader', 'http', '--downloader-args', `http:Range=bytes=${start}-${end}`);
+  }
+
+  args.push('-o', '-');
+  args.push(url);
+  return args;
+}
+
+function buildFallbackStreamArgs({ url, type, quality, mp3 }) {
   const args = ['--no-warnings', '--no-playlist'];
 
   if (type === 'audio') {
@@ -209,13 +268,8 @@ function buildStreamArgs({ url, type, quality, mp3, start, end }) {
     args.push('--merge-output-format', 'mp4');
   }
 
-  if (Number.isFinite(start) && Number.isFinite(end)) {
-    args.push('--downloader', 'http', '--downloader-args', `http:Range=bytes=${start}-${end}`);
-  }
-
   args.push('-o', '-');
   args.push(url);
-
   return args;
 }
 
@@ -258,37 +312,40 @@ app.get('/api/media', async (req, res) => {
   });
 
   const contentDisposition = makeContentDisposition(responseFilename, isDownload);
+
+  const safePartial = !isDisk && !isDownload && mediaType === 'audio' && isSafePartialAudio(metadata, wantMp3);
+  const selectedAudioFormat = safePartial ? selectBestAudioFormat(metadata) : null;
+  const knownSize = safePartial && selectedAudioFormat
+    ? Number(selectedAudioFormat.filesize || selectedAudioFormat.filesize_approx || 0)
+    : null;
+  const requestedRange = safePartial ? parseRangeHeader(req.headers.range, knownSize) : null;
+
   const contentType = mediaType === 'audio'
-    ? (wantMp3 ? 'audio/mpeg' : 'audio/*')
+    ? getAudioMime(metadata, wantMp3)
     : 'video/mp4';
 
-  let sizeBytes = null;
-  if (mediaType === 'audio') {
-    const bestAudio = Array.isArray(metadata.formats)
-      ? metadata.formats
-          .filter((fmt) => fmt && fmt.vcodec === 'none')
-          .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0]
-      : null;
-    sizeBytes = Number(bestAudio && (bestAudio.filesize || bestAudio.filesize_approx)) || null;
-  } else {
-    sizeBytes = Number(metadata.filesize || metadata.filesize_approx) || null;
-  }
-
-  const range = parseRangeHeader(req.headers.range, sizeBytes);
-  const ytDlpArgs = buildStreamArgs({
-    url,
-    type: mediaType,
-    quality,
-    mp3: wantMp3,
-    start: range?.start,
-    end: range?.end,
-  });
+  const ytDlpArgs = safePartial && selectedAudioFormat
+    ? buildSafeAudioArgs({
+        url,
+        formatId: selectedAudioFormat.format_id,
+        start: requestedRange?.start,
+        end: requestedRange?.end,
+        allowRange: Boolean(requestedRange),
+      })
+    : buildFallbackStreamArgs({
+        url,
+        type: mediaType,
+        quality,
+        mp3: wantMp3,
+      });
 
   const proc = spawnYtDlp(ytDlpArgs);
   let stderr = '';
-  let headersSent = false;
+  let responseStarted = false;
+  let requestClosed = false;
 
   const cleanup = () => {
+    requestClosed = true;
     if (!proc.killed) {
       proc.kill('SIGKILL');
     }
@@ -304,7 +361,7 @@ app.get('/api/media', async (req, res) => {
   proc.on('error', (err) => {
     if (!res.headersSent) {
       const mapped = mapYtDlpError(err);
-      res.status(mapped.status).json({ error: mapped.message });
+      res.status(mapped.status).json({ error: mapped.message, details: String(err.message || err) });
     }
   });
 
@@ -328,27 +385,29 @@ app.get('/api/media', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', contentType);
 
-    if (range && sizeBytes) {
-      res.status(206);
+    if (safePartial && knownSize) {
       res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${sizeBytes}`);
-      res.setHeader('Content-Length', String(range.end - range.start + 1));
-    } else if (sizeBytes) {
-      res.setHeader('Content-Length', String(sizeBytes));
-      res.setHeader('Accept-Ranges', 'bytes');
+
+      if (requestedRange) {
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${requestedRange.start}-${requestedRange.end}/${knownSize}`);
+        res.setHeader('Content-Length', String(requestedRange.end - requestedRange.start + 1));
+      } else {
+        res.setHeader('Content-Length', String(knownSize));
+      }
     }
 
-    headersSent = true;
+    responseStarted = true;
     await pipeline(proc.stdout, res);
 
     const exitCode = await new Promise((resolve) => proc.on('close', resolve));
-    if (exitCode !== 0 && !res.writableEnded) {
+    if (!requestClosed && exitCode !== 0) {
       throw new Error(stderr || `yt-dlp exited with code ${exitCode}`);
     }
   } catch (err) {
     cleanup();
 
-    if (!headersSent && !res.headersSent) {
+    if (!responseStarted && !res.headersSent) {
       const mapped = mapYtDlpError(err);
       res.status(mapped.status).json({ error: mapped.message, details: String(err.message || err) });
       return;
@@ -356,7 +415,7 @@ app.get('/api/media', async (req, res) => {
 
     if (!res.headersSent) {
       res.status(500).end();
-    } else {
+    } else if (!res.writableEnded) {
       res.end();
     }
   }
@@ -382,6 +441,9 @@ app.get('/api/media/info', async (req, res) => {
       mp3: wantMp3,
     });
 
+    const safePartial = mediaType === 'audio' && isSafePartialAudio(metadata, wantMp3);
+    const bestAudio = safePartial ? selectBestAudioFormat(metadata) : null;
+
     res.json({
       ok: true,
       id: metadata.id,
@@ -394,6 +456,9 @@ app.get('/api/media/info', async (req, res) => {
       suggestedFilename: outputFilename,
       extractor: metadata.extractor,
       webpageUrl: metadata.webpage_url,
+      safePartial,
+      streamMime: mediaType === 'audio' ? getAudioMime(metadata, wantMp3) : 'video/mp4',
+      safePartialSizeBytes: bestAudio ? Number(bestAudio.filesize || bestAudio.filesize_approx || 0) : null,
     });
   } catch (err) {
     const mapped = mapYtDlpError(err);
